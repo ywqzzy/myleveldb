@@ -1,0 +1,1 @@
+a clone of leveldb in golang
