@@ -7,7 +7,8 @@ import (
 )
 
 type MemTable struct {
-	table *skiplist.SkipList
+	table       *skiplist.SkipList
+	memoryUsage uint64
 }
 
 func New() *MemTable {
@@ -16,12 +17,16 @@ func New() *MemTable {
 	}
 }
 
-func (memTable *MemTable) NewIterator() *skiplist.Iterator {
-	return memTable.table.NewIterator()
+func (memTable *MemTable) NewIterator() *Iterator {
+	return &Iterator{
+		memTable.table.NewIterator(),
+	}
 }
 
 func (memTable *MemTable) Add(seq int64, valueType internal.ValueType, key, value []byte) {
 	internalKey := internal.NewInternalKey(seq, valueType, key, value)
+
+	memTable.memoryUsage += uint64(16 + len(key) + len(value))
 	memTable.table.Insert(internalKey)
 }
 
@@ -34,14 +39,18 @@ func (memTable *MemTable) Get(key []byte) (bool, []byte, error) {
 	if it.Valid() {
 		internalKey := it.Key().(*internal.InternalKey)
 
-		if internal.UserKeyComparator(key, internalKey.UserKey()) == 0 {
+		if internal.UserKeyComparator(key, internalKey.UserKey) == 0 {
 			// check valueType
-			if internalKey.ValueType() == internal.TypeValue {
-				return true, internalKey.UserValue(), nil
+			if internalKey.Type == internal.TypeValue {
+				return true, internalKey.UserValue, nil
 			} else {
 				return true, nil, errors.New("not found")
 			}
 		}
 	}
 	return false, nil, errors.New("not found")
+}
+
+func (memTable *MemTable) ApproximateMemoryUsage() uint64 {
+	return memTable.memoryUsage
 }

@@ -1,5 +1,7 @@
 package mylevelDB
 
+import "mylevelDB/db"
+
 type LevelDB interface {
 	Put(key, value []byte) error
 	Get(key []byte) ([]byte, error)
@@ -9,7 +11,6 @@ type LevelDB interface {
 type Iterator interface {
 	Valid() bool
 	Key() []byte
-	Value() []byte
 	Next()
 	Prev()
 	// Advance to the first entry with a key >= target
@@ -18,4 +19,8 @@ type Iterator interface {
 	SeekToFirst()
 
 	SeekToLast()
+}
+
+func Open() LevelDB {
+	return db.Open()
 }
