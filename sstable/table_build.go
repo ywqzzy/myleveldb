@@ -1,10 +1,9 @@
 package sstable
 
 import (
-	"bytes"
-	"encoding/gob"
-	"io"
 	"mylevelDB/internal"
+	"mylevelDB/sstable/block"
+	"os"
 )
 
 const (
@@ -12,22 +11,25 @@ const (
 )
 
 type TableBuilder struct {
-	writer             io.Writer
-	offset             int
-	numEntries         int
-	dataBlock          *BlockBuilder
-	indexBlock         *BlockBuilder
+	file               *os.File
+	offset             uint32
+	numEntries         int32
+	dataBlockBuilder   block.BlockBuilder
+	indexBlockBuilder  block.BlockBuilder
 	pendingIndexEntry  bool
 	pendingIndexHandle IndexBlockHandle
 	status             error
 	//TODO  METABLOCK
 }
 
-func NewTableBuilder(writer io.Writer) *TableBuilder {
+func NewTableBuilder(fileName string) *TableBuilder {
 	var builder TableBuilder
-	builder.writer = writer
-	builder.dataBlock = newBlockBuilder()
-	builder.indexBlock = newBlockBuilder()
+	var err error
+	builder.file, err = os.Create(fileName)
+	if err != nil {
+		return nil
+	}
+	builder.pendingIndexEntry = false
 	return &builder
 }
 
@@ -37,24 +39,25 @@ func (builder *TableBuilder) Add(internalKey *internal.InternalKey) {
 	}
 
 	if builder.pendingIndexEntry {
-		builder.indexBlock.add(builder.pendingIndexHandle)
+		builder.indexBlockBuilder.Add(builder.pendingIndexHandle.InternalKey)
 		builder.pendingIndexEntry = false
 	}
 	// TODO filter block  bloom filter
-	builder.pendingIndexHandle.LastKey = internalKey.UserKey
+	builder.pendingIndexHandle.InternalKey = internalKey
+
 	builder.numEntries++
-	builder.dataBlock.add(internalKey)
-	if builder.dataBlock.currentSizeEstimate() > MAX_BLOCK_SIZE {
+	builder.dataBlockBuilder.Add(internalKey)
+	if builder.dataBlockBuilder.CurrentSizeEstimate() > MAX_BLOCK_SIZE {
 		builder.flush()
 	}
 }
 
 func (builder *TableBuilder) flush() {
-	if builder.dataBlock.empty() {
+	if builder.dataBlockBuilder.Empty() {
 		return
 	}
 
-	builder.pendingIndexHandle.BlockHandle = builder.writeBlock(builder.dataBlock)
+	builder.pendingIndexHandle.SetBlockHandle(builder.writeBlock(&builder.dataBlockBuilder))
 	builder.pendingIndexEntry = true
 }
 
@@ -66,38 +69,32 @@ func (builder *TableBuilder) Finish() error {
 
 	// write index block
 	if builder.pendingIndexEntry {
-		builder.indexBlock.add(builder.pendingIndexHandle)
+		builder.indexBlockBuilder.Add(builder.pendingIndexHandle.InternalKey)
 		builder.pendingIndexEntry = false
 	}
 
 	var footer Footer
 
-	footer.IndexHandle = builder.writeBlock(builder.indexBlock)
+	footer.IndexHandle = builder.writeBlock(&builder.indexBlockBuilder)
 
 	// write footer block, 40 byte
-	footerRaw := make([]byte, 40)
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	enc.Encode(footer)
-	copy(footerRaw, buf.Bytes())
-
-	builder.writer.Write(footerRaw)
+	footer.EncodeTo(builder.file)
+	builder.file.Close()
 	return nil
 }
 
-func (builder *TableBuilder) writeBlock(block *BlockBuilder) BlockHandle {
-	content := block.finish()
+func (builder *TableBuilder) writeBlock(blockBuilder *block.BlockBuilder) BlockHandle {
+	content := blockBuilder.Finish()
 
 	// TODO  compress, crc
-	builder.writer.Write(content)
 
 	var blockHandle BlockHandle
 	blockHandle.Offset = builder.offset
-	blockHandle.Size = len(content)
-	builder.offset += len(content)
-	_, builder.status = builder.writer.Write(content) // why 2 次调用
-
-	block.reset()
+	blockHandle.Size = uint32(len(content))
+	builder.offset += uint32(len(content))
+	_, builder.status = builder.file.Write(content)
+	builder.file.Sync()
+	blockBuilder.Reset()
 
 	return blockHandle
 }
